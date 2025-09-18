@@ -1,0 +1,19 @@
+Package: DirichletForest
+Type: Package
+Title: Dirichlet Random Forest for Compositional Data
+Version: 0.1.0
+Author: Khaled Masoumifard <masoumifardk@yahoo.com>
+Maintainer: Khaled Masoumifard <masoumifardk@yahoo.com>
+Description: Implementation of Dirichlet Random Forest for modeling and 
+    predicting compositional data using maximum likelihood estimation 
+    or method of moments.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Depends: R (>= 3.5.0)
+Imports: 
+    Rcpp (>= 1.0.0)
+LinkingTo: 
+    Rcpp
+RoxygenNote: 7.3.2
+SystemRequirements: C++11
