@@ -26,179 +26,381 @@ struct Node {
   }
 };
 
+// Custom implementation of log gamma function using Lanczos approximation
+double custom_lgamma(double x) {
+    if (x <= 0) return std::numeric_limits<double>::quiet_NaN();
+    
+    // For very small values, use recurrence relation
+    if (x < 0.5) {
+        return custom_lgamma(x + 1) - std::log(x);
+    }
+    
+    // Lanczos approximation with g=7, n=9 (high precision)
+    if (x < 12.0) {
+        static const double g = 7.0;
+        static const double coeff[9] = {
+            0.99999999999980993,
+            676.5203681218851,
+            -1259.1392167224028,
+            771.32342877765313,
+            -176.61502916214059,
+            12.507343278686905,
+            -0.13857109526572012,
+            9.9843695780195716e-6,
+            1.5056327351493116e-7
+        };
+        
+        x -= 1.0;
+        double a = coeff[0];
+        for (int i = 1; i < 9; i++) {
+            a += coeff[i] / (x + static_cast<double>(i));
+        }
+        
+        double t = x + g + 0.5;
+        return 0.5 * std::log(2.0 * M_PI) + (x + 0.5) * std::log(t) - t + std::log(a);
+    }
+    
+    // Stirling's approximation for large values
+    const double inv_x = 1.0 / x;
+    const double inv_x_sq = inv_x * inv_x;
+    
+    return (x - 0.5) * std::log(x) - x + 0.91893853320467274178 + // 0.5*log(2*pi)
+           inv_x * (0.083333333333333333333 - inv_x_sq * 
+           (0.002777777777777777778 - inv_x_sq * 0.0007936507936507937));
+}
+
+// Custom implementation of digamma function (psi function)
+double custom_digamma(double x) {
+    if (x <= 0) return std::numeric_limits<double>::quiet_NaN();
+    
+    // Use recurrence relation for small values
+    double result = 0.0;
+    while (x < 6.0) {
+        result -= 1.0 / x;
+        x += 1.0;
+    }
+    
+    // Asymptotic expansion for large x
+    const double inv_x = 1.0 / x;
+    const double inv_x_sq = inv_x * inv_x;
+    
+    return result + std::log(x) - 0.5 * inv_x - 
+           inv_x_sq * (0.083333333333333333333 - inv_x_sq * 0.0083333333333333333333);
+}
+
+// Custom implementation of trigamma function (derivative of digamma)
+double custom_trigamma(double x) {
+    if (x <= 0) return std::numeric_limits<double>::quiet_NaN();
+    
+    // Use recurrence relation for small values
+    double result = 0.0;
+    while (x < 6.0) {
+        result += 1.0 / (x * x);
+        x += 1.0;
+    }
+    
+    // Asymptotic expansion for large x
+    const double inv_x = 1.0 / x;
+    const double inv_x_sq = inv_x * inv_x;
+    
+    return result + inv_x + 0.5 * inv_x_sq + 
+           inv_x_sq * inv_x * (0.16666666666666666667 - 0.033333333333333333333 * inv_x_sq);
+}
+
+// LU decomposition with partial pivoting for matrix inversion
+bool lu_invert(std::vector<std::vector<double>>& A, int n) {
+    // Create permutation vector
+    std::vector<int> perm(n);
+    for (int i = 0; i < n; i++) perm[i] = i;
+    
+    // LU decomposition
+    for (int k = 0; k < n; k++) {
+        // Find pivot
+        int max_row = k;
+        double max_val = std::abs(A[k][k]);
+        for (int i = k + 1; i < n; i++) {
+            double val = std::abs(A[i][k]);
+            if (val > max_val) {
+                max_val = val;
+                max_row = i;
+            }
+        }
+        
+        if (max_val < 1e-14) return false; // Singular matrix
+        
+        // Swap rows
+        if (max_row != k) {
+            std::swap(A[k], A[max_row]);
+            std::swap(perm[k], perm[max_row]);
+        }
+        
+        // Eliminate
+        for (int i = k + 1; i < n; i++) {
+            A[i][k] /= A[k][k];
+            for (int j = k + 1; j < n; j++) {
+                A[i][j] -= A[i][k] * A[k][j];
+            }
+        }
+    }
+    
+    // Create identity matrix for inversion
+    std::vector<std::vector<double>> inv(n, std::vector<double>(n, 0.0));
+    for (int i = 0; i < n; i++) inv[i][i] = 1.0;
+    
+    // Apply permutation to identity
+    for (int i = 0; i < n; i++) {
+        if (perm[i] != i) {
+            std::swap(inv[i], inv[perm[i]]);
+        }
+    }
+    
+    // Forward substitution
+    for (int i = 1; i < n; i++) {
+        for (int k = 0; k < i; k++) {
+            for (int j = 0; j < n; j++) {
+                inv[i][j] -= A[i][k] * inv[k][j];
+            }
+        }
+    }
+    
+    // Back substitution
+    for (int i = n - 1; i >= 0; i--) {
+        for (int j = 0; j < n; j++) {
+            inv[i][j] /= A[i][i];
+        }
+        for (int k = 0; k < i; k++) {
+            for (int j = 0; j < n; j++) {
+                inv[k][j] -= A[k][i] * inv[i][j];
+            }
+        }
+    }
+    
+    // Copy result back to A
+    A = inv;
+    return true;
+}
+
+// Matrix-vector multiplication
+std::vector<double> matvec_multiply(const std::vector<std::vector<double>>& A, 
+                                    const std::vector<double>& b) {
+    int n = A.size();
+    int m = b.size();
+    std::vector<double> result(n, 0.0);
+    
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < m; j++) {
+            result[i] += A[i][j] * b[j];
+        }
+    }
+    
+    return result;
+}
+
 // Helper function to calculate Dirichlet log-likelihood
 double log_likelihood_dirichlet_rcpp(const NumericMatrix& Y, const NumericVector& alpha) {
-  int n = Y.nrow();
-  int k = Y.ncol();
-  double loglik = 0.0;
-  double alpha_sum = sum(alpha);
-  
-  for (int i = 0; i < n; i++) {
-    double sum_y = 0.0;
+    int n = Y.nrow();
+    int k = Y.ncol();
+    double loglik = 0.0;
+    double alpha_sum = 0.0;
+    
+    // Calculate alpha sum
     for (int j = 0; j < k; j++) {
-      if (Y(i, j) <= 0 || Y(i, j) >= 1) {
-        return -1e18; // Penalize invalid values
-      }
-      sum_y += Y(i, j);
+        alpha_sum += alpha[j];
     }
     
-    if (std::abs(sum_y - 1.0) > 1e-6) {
-      return -1e18; // Penalize if doesn't sum to 1
+    double log_gamma_alpha_sum = custom_lgamma(alpha_sum);
+    
+    // Pre-compute log_gamma for alpha values
+    std::vector<double> log_gamma_alpha(k);
+    for (int j = 0; j < k; j++) {
+        log_gamma_alpha[j] = custom_lgamma(alpha[j]);
     }
     
-    loglik += R::lgammafn(alpha_sum);
-    for (int j = 0; j < k; j++) {
-      loglik -= R::lgammafn(alpha[j]);
-      loglik += (alpha[j] - 1) * log(Y(i, j));
+    for (int i = 0; i < n; i++) {
+        double sum_y = 0.0;
+        double row_contrib = 0.0;
+        
+        // Check validity and calculate contribution
+        for (int j = 0; j < k; j++) {
+            double y_val = Y(i, j);
+            if (y_val <= 0 || y_val >= 1) {
+                return -1e18; // Invalid values
+            }
+            sum_y += y_val;
+            row_contrib += (alpha[j] - 1) * std::log(y_val);
+        }
+        
+        if (std::abs(sum_y - 1.0) > 1e-6) {
+            return -1e18; // Doesn't sum to 1
+        }
+        
+        loglik += log_gamma_alpha_sum;
+        for (int j = 0; j < k; j++) {
+            loglik -= log_gamma_alpha[j];
+        }
+        loglik += row_contrib;
     }
-  }
-  
-  return loglik;
+    
+    return loglik;
 }
 
 // Method of Moments estimation
 NumericVector estimate_parameters_mom_rcpp(const NumericMatrix& Y) {
-  const int n = Y.nrow();
-  const int k = Y.ncol();
-  
-  if (n == 0) {
-    return NumericVector(k, 1.0);
-  }
-  
-  NumericVector means(k, 0.0);
-  NumericVector variances(k, 0.0);
-  
-  // Single pass: compute means and sum of squares simultaneously
-  for (int i = 0; i < n; ++i) {
-    for (int j = 0; j < k; ++j) {
-      const double val = Y(i, j);
-      means[j] += val;
-      variances[j] += val * val;
+    const int n = Y.nrow();
+    const int k = Y.ncol();
+    
+    if (n == 0) {
+        return NumericVector(k, 1.0);
     }
-  }
-  
-  // Finalize calculations
-  const double inv_n = 1.0 / n;
-  const double inv_n_minus_1 = 1.0 / (n - 1);
-  
-  for (int j = 0; j < k; ++j) {
-    means[j] *= inv_n;
-    variances[j] = (variances[j] - n * means[j] * means[j]) * inv_n_minus_1;
-  }
-  
-  // Estimate parameters
-  const double min_var = 1e-8;
-  variances[0] = std::max(variances[0], min_var);
-  
-  const double v_val = std::max((means[0] * (1.0 - means[0])) / variances[0] - 1.0, 1.0);
-  
-  NumericVector alpha(k);
-  for (int j = 0; j < k; ++j) {
-    alpha[j] = std::max(0.01, std::min(1000.0, v_val * means[j]));
-  }
-  
-  return alpha;
+    
+    NumericVector means(k, 0.0);
+    NumericVector variances(k, 0.0);
+    
+    // Calculate means and variances
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < k; ++j) {
+            const double val = Y(i, j);
+            means[j] += val;
+            variances[j] += val * val;
+        }
+    }
+    
+    const double inv_n = 1.0 / n;
+    const double inv_n_minus_1 = (n > 1) ? 1.0 / (n - 1) : 1.0;
+    
+    for (int j = 0; j < k; ++j) {
+        means[j] *= inv_n;
+        variances[j] = (variances[j] - n * means[j] * means[j]) * inv_n_minus_1;
+    }
+    
+    // Estimate parameters
+    const double min_var = 1e-8;
+    variances[0] = std::max(variances[0], min_var);
+    
+    const double v_val = std::max((means[0] * (1.0 - means[0])) / variances[0] - 1.0, 1.0);
+    
+    NumericVector alpha(k);
+    for (int j = 0; j < k; ++j) {
+        alpha[j] = std::max(0.01, std::min(1000.0, v_val * means[j]));
+    }
+    
+    return alpha;
 }
 
 // MLE estimation with Newton-Raphson
 NumericVector estimate_parameters_mle_newton_rcpp(const NumericMatrix& Y, int max_iter = 100, double tol = 1e-6, double lambda = 1e-6) {
-  int n = Y.nrow();
-  int k = Y.ncol();
-  
-  if (n == 0) {
-    return NumericVector(k, 1.0);
-  }
-  
-  // Initialize with method of moments
-  NumericVector alpha = estimate_parameters_mom_rcpp(Y);
-  
-  // Pre-calculate log Y values
-  NumericMatrix log_Y(n, k);
-  for (int i = 0; i < n; i++) {
-    for (int j = 0; j < k; j++) {
-      if (Y(i, j) <= 0) {
-        log_Y(i, j) = -std::numeric_limits<double>::infinity();
-      } else {
-        log_Y(i, j) = log(Y(i, j));
-      }
-    }
-  }
-  
-  for (int iter = 0; iter < max_iter; iter++) {
-    double alpha_sum = sum(alpha);
+    int n = Y.nrow();
+    int k = Y.ncol();
     
-    // Calculate gradient
-    NumericVector grad(k);
-    for (int j = 0; j < k; j++) {
-      grad[j] = n * (R::digamma(alpha_sum) - R::digamma(alpha[j]));
-      for (int i = 0; i < n; i++) {
-        if (std::isfinite(log_Y(i, j))) {
-          grad[j] += log_Y(i, j);
+    if (n == 0) {
+        return NumericVector(k, 1.0);
+    }
+    
+    // Initialize with method of moments
+    NumericVector alpha = estimate_parameters_mom_rcpp(Y);
+    
+    // Pre-calculate log Y values
+    std::vector<std::vector<double>> log_Y(n, std::vector<double>(k));
+    std::vector<std::vector<bool>> valid_log(n, std::vector<bool>(k, false));
+    
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < k; j++) {
+            if (Y(i, j) > 0) {
+                log_Y[i][j] = std::log(Y(i, j));
+                valid_log[i][j] = true;
+            }
         }
-      }
     }
     
-    // Calculate Hessian
-    NumericMatrix H(k, k);
-    double trigamma_sum = R::trigamma(alpha_sum);
-    
-    for (int j = 0; j < k; j++) {
-      for (int l = 0; l < k; l++) {
-        if (j == l) {
-          H(j, l) = n * (trigamma_sum - R::trigamma(alpha[j])) + lambda;
+    for (int iter = 0; iter < max_iter; iter++) {
+        double alpha_sum = 0.0;
+        for (int j = 0; j < k; j++) {
+            alpha_sum += alpha[j];
+        }
+        
+        double digamma_alpha_sum = custom_digamma(alpha_sum);
+        double trigamma_alpha_sum = custom_trigamma(alpha_sum);
+        
+        // Calculate gradient
+        std::vector<double> grad(k, 0.0);
+        for (int j = 0; j < k; j++) {
+            grad[j] = n * (digamma_alpha_sum - custom_digamma(alpha[j]));
+            for (int i = 0; i < n; i++) {
+                if (valid_log[i][j]) {
+                    grad[j] += log_Y[i][j];
+                }
+            }
+        }
+        
+        // Calculate Hessian
+        std::vector<std::vector<double>> H(k, std::vector<double>(k));
+        for (int j = 0; j < k; j++) {
+            for (int l = 0; l < k; l++) {
+                if (j == l) {
+                    H[j][l] = n * (trigamma_alpha_sum - custom_trigamma(alpha[j])) + lambda;
+                } else {
+                    H[j][l] = n * trigamma_alpha_sum;
+                }
+            }
+        }
+        
+        // Solve H * delta = -grad
+        std::vector<double> delta(k);
+        if (!lu_invert(H, k)) {
+            // Fallback to diagonal approximation
+            for (int j = 0; j < k; j++) {
+                double diag_val = n * (trigamma_alpha_sum - custom_trigamma(alpha[j])) + lambda;
+                delta[j] = -grad[j] / diag_val;
+            }
         } else {
-          H(j, l) = n * trigamma_sum;
+            std::vector<double> neg_grad(k);
+            for (int j = 0; j < k; j++) {
+                neg_grad[j] = -grad[j];
+            }
+            delta = matvec_multiply(H, neg_grad);
         }
-      }
-    }
-    
-    // Solve for delta using R's solve function
-    NumericMatrix H_mat = clone(H);
-    NumericVector neg_grad = -grad;
-    
-    SEXP solve_call = PROTECT(Rf_lang3(Rf_install("solve"), 
-                                       PROTECT(wrap(H_mat)), 
-                                       PROTECT(wrap(neg_grad))));
-    NumericVector delta = as<NumericVector>(Rf_eval(solve_call, R_GlobalEnv));
-    UNPROTECT(3);
-    
-    // Check convergence
-    double norm_delta = sqrt(sum(delta * delta));
-    if (norm_delta < tol) {
-      break;
-    }
-    
-    // Line search
-    double step_size = 1.0;
-    NumericVector alpha_new(k);
-    bool valid_step = false;
-    
-    for (int ls = 0; ls < 20; ls++) {
-      bool all_valid = true;
-      for (int j = 0; j < k; j++) {
-        alpha_new[j] = alpha[j] + step_size * delta[j];
-        if (alpha_new[j] < 0.1 || alpha_new[j] > 1000.0 || !std::isfinite(alpha_new[j])) {
-          all_valid = false;
-          break;
+        
+        // Check convergence
+        double norm_delta_sq = 0.0;
+        for (int j = 0; j < k; j++) {
+            norm_delta_sq += delta[j] * delta[j];
         }
-      }
-      
-      if (all_valid) {
-        valid_step = true;
-        break;
-      }
-      
-      step_size *= 0.5;
+        
+        if (norm_delta_sq < tol * tol) {
+            break;
+        }
+        
+        // Line search
+        double step_size = 1.0;
+        bool valid_step = false;
+        
+        for (int ls = 0; ls < 10; ls++) {
+            bool all_valid = true;
+            for (int j = 0; j < k; j++) {
+                double new_alpha = alpha[j] + step_size * delta[j];
+                if (new_alpha < 0.1 || new_alpha > 1000.0) {
+                    all_valid = false;
+                    break;
+                }
+            }
+            
+            if (all_valid) {
+                for (int j = 0; j < k; j++) {
+                    alpha[j] += step_size * delta[j];
+                }
+                valid_step = true;
+                break;
+            }
+            
+            step_size *= 0.5;
+        }
+        
+        if (!valid_step) {
+            break;
+        }
     }
     
-    if (valid_step) {
-      alpha = alpha_new;
-    } else {
-      break; // No valid step found
-    }
-  }
-  
-  return alpha;
+    return alpha;
 }
 
 // Calculate mean of observations in leaf
