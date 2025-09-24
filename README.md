@@ -1,4 +1,4 @@
-# DirichletForest_distributed  
+# DirichletForest
 
 This repository contains an implementation of a **Dirichlet Random Forest**, designed for modeling **compositional (Dirichlet-distributed) data**.  
 
