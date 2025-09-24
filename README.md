@@ -33,5 +33,4 @@ df_par3 <- dirichlet_forest(X, Y, B = 50)
 # Predict on new data (here we reuse X for illustration)
 pred3 <- predict_dirichlet_forest(df_par3, X)
 
-# Clean up cluster resources
-cleanup_distributed_forest(df_par3)
+
