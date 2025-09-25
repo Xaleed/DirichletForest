@@ -245,48 +245,87 @@ double log_likelihood_dirichlet_rcpp(const NumericMatrix& Y, const NumericVector
 }
 
 // Method of Moments estimation
+// Improved Method of Moments estimation to match Julia performance
 NumericVector estimate_parameters_mom_rcpp(const NumericMatrix& Y) {
     const int n = Y.nrow();
     const int k = Y.ncol();
     
+    // Handle empty matrix case
     if (n == 0) {
         return NumericVector(k, 1.0);
     }
     
-    NumericVector means(k, 0.0);
-    NumericVector variances(k, 0.0);
+    // Handle single sample case
+    if (n == 1) {
+        NumericVector result(k);
+        for (int j = 0; j < k; j++) {
+            result[j] = std::max(0.1, std::min(1000.0, Y(0, j)));
+        }
+        return result;
+    }
     
-    // Calculate means and variances
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < k; ++j) {
-            const double val = Y(i, j);
-            means[j] += val;
-            variances[j] += val * val;
+    // Calculate means efficiently
+    NumericVector means(k, 0.0);
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < k; j++) {
+            means[j] += Y(i, j);
         }
     }
     
     const double inv_n = 1.0 / n;
-    const double inv_n_minus_1 = (n > 1) ? 1.0 / (n - 1) : 1.0;
-    
-    for (int j = 0; j < k; ++j) {
+    for (int j = 0; j < k; j++) {
         means[j] *= inv_n;
-        variances[j] = (variances[j] - n * means[j] * means[j]) * inv_n_minus_1;
     }
     
-    // Estimate parameters
+    // Calculate sample variances with Bessel's correction (n-1 denominator)
+    NumericVector variances(k, 0.0);
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < k; j++) {
+            const double diff = Y(i, j) - means[j];
+            variances[j] += diff * diff;
+        }
+    }
+    
+    // Use n-1 for sample variance (Bessel's correction)
+    const double inv_n_minus_1 = 1.0 / (n - 1);
+    for (int j = 0; j < k; j++) {
+        variances[j] *= inv_n_minus_1;
+    }
+    
+    // Ensure first variance is not too close to zero (numerical stability)
     const double min_var = 1e-8;
-    variances[0] = std::max(variances[0], min_var);
+    if (variances[0] < min_var) {
+        variances[0] = min_var;
+    }
     
-    const double v_val = std::max((means[0] * (1.0 - means[0])) / variances[0] - 1.0, 1.0);
+    // Estimate concentration parameter using first category
+    // v = (μ₁(1-μ₁))/σ₁² - 1
+    const double numerator = means[0] * (1.0 - means[0]);
+    double v_val = numerator / variances[0] - 1.0;
     
+    // Ensure positive concentration parameter
+    if (v_val <= 0.0) {
+        v_val = 1.0;
+    }
+    
+    // Calculate alpha parameters: αⱼ = v * μⱼ
     NumericVector alpha(k);
-    for (int j = 0; j < k; ++j) {
-        alpha[j] = std::max(0.01, std::min(1000.0, v_val * means[j]));
+    for (int j = 0; j < k; j++) {
+        alpha[j] = v_val * means[j];
+    }
+    
+    // Apply bounds to ensure numerical stability
+    // Match Julia's clamp.(alpha, 0.1, 1000.0)
+    for (int j = 0; j < k; j++) {
+        if (alpha[j] < 0.1) {
+            alpha[j] = 0.1;
+        } else if (alpha[j] > 1000.0) {
+            alpha[j] = 1000.0;
+        }
     }
     
     return alpha;
 }
-
 // MLE estimation with Newton-Raphson
 NumericVector estimate_parameters_mle_newton_rcpp(const NumericMatrix& Y, int max_iter = 100, double tol = 1e-6, double lambda = 1e-6) {
     int n = Y.nrow();
