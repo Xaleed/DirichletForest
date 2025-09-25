@@ -353,7 +353,7 @@ NumericVector estimate_parameters_mom_rcpp(const NumericMatrix& Y) {
     
     // Ensure positive concentration parameter
     if (v_val <= 0.0) {
-        v_val = 1.0;
+        v_val = 0.1;
     }
     
     // Calculate alpha parameters: αⱼ = v * μⱼ
