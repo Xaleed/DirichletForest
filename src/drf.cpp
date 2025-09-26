@@ -208,12 +208,12 @@ double log_likelihood_dirichlet_rcpp(const NumericMatrix& Y, const NumericVector
         alpha_sum += alpha[j];
     }
     
-    double log_gamma_alpha_sum = custom_lgamma(alpha_sum);
+    double log_gamma_alpha_sum = R::lgammafn(alpha_sum);
     
     // Pre-compute log_gamma for alpha values
     std::vector<double> log_gamma_alpha(k);
     for (int j = 0; j < k; j++) {
-        log_gamma_alpha[j] = custom_lgamma(alpha[j]);
+        log_gamma_alpha[j] = R::lgammafn(alpha[j]);
     }
     
     for (int i = 0; i < n; i++) {
@@ -245,7 +245,6 @@ double log_likelihood_dirichlet_rcpp(const NumericMatrix& Y, const NumericVector
 }
 
 // Method of Moments estimation
-// Improved Method of Moments estimation to match Julia performance
 NumericVector estimate_parameters_mom_rcpp(const NumericMatrix& Y) {
     const int n = Y.nrow();
     const int k = Y.ncol();
@@ -363,13 +362,13 @@ NumericVector estimate_parameters_mle_newton_rcpp(const NumericMatrix& Y, int ma
             alpha_sum += alpha[j];
         }
         
-        double digamma_alpha_sum = custom_digamma(alpha_sum);
-        double trigamma_alpha_sum = custom_trigamma(alpha_sum);
+        double digamma_alpha_sum = R::digamma(alpha_sum);
+        double trigamma_alpha_sum = R::trigamma(alpha_sum);
         
         // Calculate gradient
         std::vector<double> grad(k, 0.0);
         for (int j = 0; j < k; j++) {
-            grad[j] = n * (digamma_alpha_sum - custom_digamma(alpha[j]));
+            grad[j] = n * (digamma_alpha_sum - R::digamma(alpha[j]));
             for (int i = 0; i < n; i++) {
                 if (valid_log[i][j]) {
                     grad[j] += log_Y[i][j];
@@ -382,7 +381,7 @@ NumericVector estimate_parameters_mle_newton_rcpp(const NumericMatrix& Y, int ma
         for (int j = 0; j < k; j++) {
             for (int l = 0; l < k; l++) {
                 if (j == l) {
-                    H[j][l] = n * (trigamma_alpha_sum - custom_trigamma(alpha[j])) + lambda;
+                    H[j][l] = n * (trigamma_alpha_sum - R::trigamma(alpha[j])) + lambda;
                 } else {
                     H[j][l] = n * trigamma_alpha_sum;
                 }
@@ -394,7 +393,7 @@ NumericVector estimate_parameters_mle_newton_rcpp(const NumericMatrix& Y, int ma
         if (!lu_invert(H, k)) {
             // Fallback to diagonal approximation
             for (int j = 0; j < k; j++) {
-                double diag_val = n * (trigamma_alpha_sum - custom_trigamma(alpha[j])) + lambda;
+                double diag_val = n * (trigamma_alpha_sum - R::trigamma(alpha[j])) + lambda;
                 delta[j] = -grad[j] / diag_val;
             }
         } else {
@@ -713,66 +712,97 @@ Node* GrowTree(const NumericMatrix& X, const NumericMatrix& Y,
 
 // Build Dirichlet Forest
 // [[Rcpp::export]]
-List DirichletForest(NumericMatrix X, NumericMatrix Y, int B = 100, 
-                     int d_max = 10, int n_min = 5, int m_try = -1, 
-                     int seed = 123, std::string method = "mle", // --- ADDED: q_threshold ---
-                     int q_threshold = 500000000) { 
+List DirichletForest(NumericMatrix X, NumericMatrix Y, int n_trees = 100, 
+                     int m_try = -1, int d_max = 10, int n_min = 5, 
+                     int q_threshold = 10, std::string method = "mom") {
   
   int n_samples = X.nrow();
   int n_features = X.ncol();
+  int n_classes = Y.ncol();
   
-  if (m_try <= 0) {
+  // Set m_try to sqrt(n_features) if not specified
+  if (m_try == -1) {
     m_try = std::max(1, (int)std::sqrt(n_features));
   }
   
-  std::mt19937 gen(seed);
-  // CORRECTED: Use proper bootstrap sampling with replacement
-  std::uniform_int_distribution<int> dis(0, n_samples - 1);
+  List forest_list(n_trees);
   
-  std::vector<Node*> forest(B);
+  // Initialize random number generator
+  std::mt19937 rng(std::random_device{}());
   
-  for (int b = 0; b < B; b++) {
-    // CORRECTED: Bootstrap sampling WITH replacement (like Julia)
-    IntegerVector bootstrap_indices(n_samples);
+  for (int tree_idx = 0; tree_idx < n_trees; tree_idx++) {
+    // Bootstrap sampling with replacement
+    std::vector<int> bootstrap_indices;
+    bootstrap_indices.reserve(n_samples);
+    
     for (int i = 0; i < n_samples; i++) {
-      bootstrap_indices[i] = dis(gen);
+      int rand_idx = R::runif(0, 1) * n_samples;
+      if (rand_idx >= n_samples) rand_idx = n_samples - 1;
+      bootstrap_indices.push_back(rand_idx);
     }
     
-    // Grow tree
-    forest[b] = GrowTree(X, Y, bootstrap_indices, 0, d_max, n_min, m_try, gen, method, q_threshold); // --- MODIFIED
-  }
-  
-  // Convert to external pointers for R
-  List forest_ptrs(B);
-  for (int i = 0; i < B; i++) {
-    forest_ptrs[i] = XPtr<Node>(forest[i]);
+    // Extract bootstrap samples
+    NumericMatrix X_bootstrap(n_samples, n_features);
+    NumericMatrix Y_bootstrap(n_samples, n_classes);
+    
+    for (int i = 0; i < n_samples; i++) {
+      int idx = bootstrap_indices[i];
+      for (int j = 0; j < n_features; j++) {
+        X_bootstrap(i, j) = X(idx, j);
+      }
+      for (int j = 0; j < n_classes; j++) {
+        Y_bootstrap(i, j) = Y(idx, j);
+      }
+    }
+    
+    // Create sample indices for this tree as IntegerVector
+    IntegerVector sample_indices(n_samples);
+    for (int i = 0; i < n_samples; i++) {
+      sample_indices[i] = i;
+    }
+    
+    // Grow the tree
+    Node* root = GrowTree(X_bootstrap, Y_bootstrap, sample_indices, 0, 
+                          m_try, d_max, n_min, rng, method, q_threshold);
+    
+    // Store as XPtr
+    forest_list[tree_idx] = XPtr<Node>(root, true);
   }
   
   return List::create(
-    Named("forest") = forest_ptrs,
-    Named("n_trees") = B,
+    Named("forest") = forest_list,
+    Named("n_trees") = n_trees,
+    Named("n_classes") = n_classes,
     Named("n_features") = n_features,
-    Named("n_classes") = Y.ncol()
+    Named("m_try") = m_try,
+    Named("d_max") = d_max,
+    Named("n_min") = n_min,
+    Named("q_threshold") = q_threshold,
+    Named("method") = method
   );
 }
 
-// Predict single sample through tree
-List predict_sample_tree(Node* node, const NumericVector& x) {
-  if (node->is_leaf) {
-    return List::create(
-      Named("alpha_prediction") = node->alpha_prediction,
-      Named("mean_prediction") = node->mean_prediction
-    );
+// Helper function to predict a single sample on a single tree
+List predict_sample_tree(XPtr<Node> tree_root, NumericVector sample) {
+  Node* current_node = tree_root.get();
+  
+  // Traverse the tree until we reach a leaf
+  while (!current_node->is_leaf) {
+    double feature_value = sample[current_node->feature_index];
+    if (feature_value <= current_node->split_value) {
+      current_node = current_node->left;
+    } else {
+      current_node = current_node->right;
+    }
   }
   
-  if (x[node->feature_index] <= node->split_value) {
-    return predict_sample_tree(node->left, x);
-  } else {
-    return predict_sample_tree(node->right, x);
-  }
+  // Return predictions from the leaf node
+  return List::create(
+    Named("alpha_prediction") = current_node->alpha_prediction,
+    Named("mean_prediction") = current_node->mean_prediction
+  );
 }
 
-// Predict with Dirichlet Forest - returns both alpha and mean predictions
 // [[Rcpp::export]]
 List PredictDirichletForest(List forest_model, NumericMatrix X_new) {
   
@@ -791,19 +821,24 @@ List PredictDirichletForest(List forest_model, NumericMatrix X_new) {
     NumericVector mean_sum(n_classes, 0.0);
     
     for (int t = 0; t < n_trees; t++) {
-      // FIX: Explicit cast to SEXP
-      XPtr<Node> tree_ptr(as<SEXP>(forest_ptrs[t]));
+      // Get tree pointer
+      SEXP tree_sexp = forest_ptrs[t];
+      XPtr<Node> tree_ptr(tree_sexp);
+      
+      // Make prediction for this sample on this tree
       List tree_pred = predict_sample_tree(tree_ptr, sample);
       
       NumericVector alpha_pred = tree_pred["alpha_prediction"];
       NumericVector mean_pred = tree_pred["mean_prediction"];
       
+      // Accumulate predictions
       for (int j = 0; j < n_classes; j++) {
         alpha_sum[j] += alpha_pred[j];
         mean_sum[j] += mean_pred[j];
       }
     }
     
+    // Average predictions across all trees
     for (int j = 0; j < n_classes; j++) {
       alpha_predictions(i, j) = alpha_sum[j] / n_trees;
       mean_predictions(i, j) = mean_sum[j] / n_trees;
@@ -816,19 +851,24 @@ List PredictDirichletForest(List forest_model, NumericMatrix X_new) {
   );
 }
 
-// Clean up forest memory
 // [[Rcpp::export]]
 void delete_dirichlet_forest_rcpp(List forest_model) {
   List forest_ptrs = forest_model["forest"];
   int n_trees = forest_model["n_trees"];
   
   for (int i = 0; i < n_trees; i++) {
-    // FIX: Explicit cast to SEXP
-    XPtr<Node> tree_ptr(as<SEXP>(forest_ptrs[i]));
-    Node* raw_ptr = tree_ptr.get();
-    if (raw_ptr != nullptr) {
-      delete raw_ptr;
-      tree_ptr.release();
+    SEXP tree_sexp = forest_ptrs[i];
+    XPtr<Node> tree_ptr(tree_sexp);
+    
+    // The XPtr destructor will automatically handle cleanup
+    // when the XPtr goes out of scope, so we don't need to manually delete
+    // Just ensure the pointer is valid before accessing
+    if (tree_ptr.get() != nullptr) {
+      // XPtr will handle the cleanup automatically
+      // No need to manually delete or release
     }
   }
+  
+  // Note: In Rcpp with XPtr, manual memory management is typically not needed
+  // as XPtr handles cleanup automatically when R garbage collects the objects
 }
