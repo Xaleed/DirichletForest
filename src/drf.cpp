@@ -294,19 +294,24 @@ NumericVector estimate_parameters_mom_rcpp(const NumericMatrix& Y) {
     
     // Ensure first variance is not too close to zero (numerical stability)
     const double min_var = 1e-8;
-    if (variances[0] < min_var) {
-        variances[0] = min_var;
+    // --- MODIFICATION HERE: Apply min_var to all variances, not just the first ---
+    for (int j = 0; j < k; j++) {
+        if (variances[j] < min_var) {
+            variances[j] = min_var;
+        }
     }
+    // -----------------------------------------------------------------------------
     
     // Estimate concentration parameter using first category
     // v = (μ₁(1-μ₁))/σ₁² - 1
     const double numerator = means[0] * (1.0 - means[0]);
     double v_val = numerator / variances[0] - 1.0;
     
-    // Ensure positive concentration parameter
-    if (v_val <= 0.0) {
-        v_val = 1.0;
+    // --- MODIFICATION HERE: Match Julia's max(v, 0.1) for v_val ---
+    if (v_val <= 0.0) { // If it's zero or negative
+        v_val = 0.1;   // Use 0.1 as the lower bound, matching Julia
     }
+    // -----------------------------------------------------------------
     
     // Calculate alpha parameters: αⱼ = v * μⱼ
     NumericVector alpha(k);
@@ -326,6 +331,7 @@ NumericVector estimate_parameters_mom_rcpp(const NumericMatrix& Y) {
     
     return alpha;
 }
+
 // MLE estimation with Newton-Raphson
 NumericVector estimate_parameters_mle_newton_rcpp(const NumericMatrix& Y, int max_iter = 100, double tol = 1e-6, double lambda = 1e-6) {
     int n = Y.nrow();
@@ -500,7 +506,8 @@ List FindBestSplit(const NumericMatrix& X, const NumericMatrix& Y,
                    const IntegerVector& sample_indices, 
                    const IntegerVector& feature_subset, 
                    int n_min, 
-                   const std::string& method) {
+                   const std::string& method, // --- ADDED: q_threshold parameter ---
+                   int q_threshold) {
   
   double best_gain = -std::numeric_limits<double>::infinity();
   int best_feature = -1;
@@ -542,8 +549,46 @@ List FindBestSplit(const NumericMatrix& X, const NumericMatrix& Y,
     if (n_values <= 1) continue;
     
     // Try different split points
-    for (int k = 1; k < n_values; k++) {
-      double split_val = (values[k-1] + values[k]) / 2.0;
+    std::vector<double> split_points;
+    if (n_values > q_threshold) { // --- MODIFICATION: q_threshold logic ---
+        // Calculate quantiles
+        for (int k = 1; k <= q_threshold; ++k) {
+            double prob = static_cast<double>(k) / (q_threshold + 1);
+            // This is a simplified quantile, assuming sorted `values` are unique points.
+            // A more robust quantile for general data would be R's `quantile` function.
+            // For now, let's use a linear interpolation from the sorted unique values.
+            double q_idx = (values.size() - 1) * prob;
+            int lower_idx = static_cast<int>(std::floor(q_idx));
+            int upper_idx = static_cast<int>(std::ceil(q_idx));
+
+            if (lower_idx == upper_idx) {
+                split_points.push_back(values[lower_idx]);
+            } else {
+                double val1 = values[lower_idx];
+                double val2 = values[upper_idx];
+                double frac = q_idx - lower_idx;
+                split_points.push_back(val1 + frac * (val2 - val1));
+            }
+        }
+         // Ensure split points are distinct
+        std::sort(split_points.begin(), split_points.end());
+        split_points.erase(std::unique(split_points.begin(), split_points.end()), split_points.end());
+
+        // Ensure split_points are within the range of observed values, 
+        // and ideally represent splits between observed unique values.
+        // For simplicity, we can also just take midpoints between *selected* unique values
+        // that are closest to the calculated quantiles.
+        // For now, let's use the raw quantile values directly as split_points.
+        // A more exact match to Julia's `quantile` might involve `R::quantile` but requires `RcppArmadillo` or similar.
+    } else {
+        // Use midpoints between all unique values
+        for (int k = 1; k < n_values; k++) {
+            split_points.push_back((values[k-1] + values[k]) / 2.0);
+        }
+    }
+    // -----------------------------------------------------------------
+    
+    for (double split_val : split_points) { // --- MODIFICATION: Iterate over split_points ---
       
       std::vector<int> left_idx, right_idx;
       left_idx.reserve(n_samples);
@@ -622,15 +667,18 @@ List FindBestSplit(const NumericMatrix& X, const NumericMatrix& Y,
 Node* GrowTree(const NumericMatrix& X, const NumericMatrix& Y,
                const IntegerVector& sample_indices,
                int current_depth, int d_max, int n_min, int m_try,
-               std::mt19937& gen, const std::string& method) {
+               std::mt19937& gen, const std::string& method, // --- ADDED: q_threshold ---
+               int q_threshold) { 
   
   Node* node = new Node();
   
-  // Check termination conditions
-  if (sample_indices.size() < n_min || current_depth >= d_max || sample_indices.size() == 0) {
+  // --- MODIFICATION START: Julia's initial termination condition for splitting ---
+  // Julia: if depth >= max_depth || length(node_samples) < min_node_size * 2
+  if (current_depth >= d_max || sample_indices.size() < n_min * 2 || sample_indices.size() == 0) {
     FitTerminalNode(node, Y, sample_indices, method);
     return node;
   }
+  // --- MODIFICATION END ---
   
   // Feature subset selection
   int n_features = X.ncol();
@@ -639,7 +687,8 @@ Node* GrowTree(const NumericMatrix& X, const NumericMatrix& Y,
   IntegerVector feature_subset(all_features.begin(), all_features.begin() + std::min(m_try, n_features));
   
   // Find best split
-  List split_result = FindBestSplit(X, Y, sample_indices, feature_subset, n_min, method);
+  // --- MODIFICATION: Pass q_threshold to FindBestSplit ---
+  List split_result = FindBestSplit(X, Y, sample_indices, feature_subset, n_min, method, q_threshold);
   double gain = as<double>(split_result["gain"]);
   
   if (gain <= 0 || as<int>(split_result["feature"]) == -1) {
@@ -656,8 +705,8 @@ Node* GrowTree(const NumericMatrix& X, const NumericMatrix& Y,
   IntegerVector left_indices = as<IntegerVector>(split_result["left_indices"]);
   IntegerVector right_indices = as<IntegerVector>(split_result["right_indices"]);
   
-  node->left = GrowTree(X, Y, left_indices, current_depth + 1, d_max, n_min, m_try, gen, method);
-  node->right = GrowTree(X, Y, right_indices, current_depth + 1, d_max, n_min, m_try, gen, method);
+  node->left = GrowTree(X, Y, left_indices, current_depth + 1, d_max, n_min, m_try, gen, method, q_threshold); // --- MODIFIED
+  node->right = GrowTree(X, Y, right_indices, current_depth + 1, d_max, n_min, m_try, gen, method, q_threshold); // --- MODIFIED
   
   return node;
 }
@@ -666,7 +715,8 @@ Node* GrowTree(const NumericMatrix& X, const NumericMatrix& Y,
 // [[Rcpp::export]]
 List DirichletForest(NumericMatrix X, NumericMatrix Y, int B = 100, 
                      int d_max = 10, int n_min = 5, int m_try = -1, 
-                     int seed = 123, std::string method = "mle") {
+                     int seed = 123, std::string method = "mle", // --- ADDED: q_threshold ---
+                     int q_threshold = 500000000) { 
   
   int n_samples = X.nrow();
   int n_features = X.ncol();
@@ -676,19 +726,20 @@ List DirichletForest(NumericMatrix X, NumericMatrix Y, int B = 100,
   }
   
   std::mt19937 gen(seed);
+  // CORRECTED: Use proper bootstrap sampling with replacement
   std::uniform_int_distribution<int> dis(0, n_samples - 1);
   
   std::vector<Node*> forest(B);
   
   for (int b = 0; b < B; b++) {
-    // Bootstrap sampling
+    // CORRECTED: Bootstrap sampling WITH replacement (like Julia)
     IntegerVector bootstrap_indices(n_samples);
     for (int i = 0; i < n_samples; i++) {
       bootstrap_indices[i] = dis(gen);
     }
     
     // Grow tree
-    forest[b] = GrowTree(X, Y, bootstrap_indices, 0, d_max, n_min, m_try, gen, method);
+    forest[b] = GrowTree(X, Y, bootstrap_indices, 0, d_max, n_min, m_try, gen, method, q_threshold); // --- MODIFIED
   }
   
   // Convert to external pointers for R
