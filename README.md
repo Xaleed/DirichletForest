@@ -2,7 +2,7 @@
 
 This repository contains an implementation of a **Dirichlet Random Forest**, designed for modeling **compositional (Dirichlet-distributed) data**.  
 
-⚠️ **Note**: This project is still in progress. For a parallel version, see my [DirichletRandom](https://github.com/Xaleed/DirichletForestParallel.git) repository.  
+⚠️ **Note**: This project is still in progress. For a parallel version, see my [DirichletRandomParallel](https://github.com/Xaleed/DirichletForestParallel.git) repository.  
 
 ---
 
