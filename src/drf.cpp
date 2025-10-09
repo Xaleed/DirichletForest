@@ -723,7 +723,7 @@ List FindBestSplit(const NumericMatrix& X, const NumericMatrix& Y,
       int n_left = static_cast<int>(left_idx.size());
       int n_right = static_cast<int>(right_idx.size());
       
-      if (n_left < n_min || n_right < n_min) {
+      if (n_left < 2 || n_right < 2) {
         continue;
       }
       
